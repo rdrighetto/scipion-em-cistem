@@ -23,61 +23,15 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # **************************************************************************
+from pyworkflow.utils import weakImport
 
-import os
+from .protocol_ctffind import CistemProtCTFFind
+from .protocol_unblur import CistemProtUnblur
+from .protocol_picking import CistemProtFindParticles
+from .protocol_refine2d import CistemProtRefine2D
 
-import pwem
-import pyworkflow.utils as pwutils
-
-from .constants import *
-
-
-__version__ = '3.6'
-_logo = "cistem_logo.png"
-_references = ['Grant2018']
-
-
-class Plugin(pwem.Plugin):
-    _homeVar = CISTEM_HOME
-    _pathVars = [CISTEM_HOME]
-    _supportedVersions = [V1_0_0]
-    _url = "https://github.com/scipion-em/scipion-em-cistem"
-
-    @classmethod
-    def _defineVariables(cls):
-        cls._defineEmVar(CISTEM_HOME, 'cistem-1.0.0-beta')
-        cls._defineEmVar(CTFFIND4_HOME, 'ctffind4-4.1.14')
-
-    @classmethod
-    def getEnviron(cls):
-        """ Setup the environment variables needed to launch cisTEM. """
-        environ = pwutils.Environ(os.environ)
-        environ.update({'PATH': cls.getHome()},
-                       position=pwutils.Environ.BEGIN)
-
-        return environ
-
-    @classmethod
-    def getProgram(cls, program):
-        """ Return the program binary that will be used. """
-        if program == CTFFIND4_BIN:
-            # if CTFFIND4_HOME is found, use it
-            path = cls.getVar(CTFFIND4_HOME)
-            if os.path.exists(path):
-                binary = os.path.join(path, 'bin', program)
-            else:
-                binary = os.path.join(cls.getHome(), program)
-        else:
-            binary = os.path.join(cls.getHome(), program)
-
-        return binary
-
-    @classmethod
-    def defineBinaries(cls, env):
-        env.addPackage('cistem', version='1.0.0-beta',
-                       url="https://grigoriefflab.umassmed.edu/sites/default/files/cistem-1.0.0-beta-intel-linux.tar.gz",
-                       default=True)
-        env.addPackage('ctffind4', version='4.1.13',
-                       tar='ctffind4-4.1.13.tgz')
-        env.addPackage('ctffind4', version='4.1.14',
-                       tar='ctffind4-4.1.14.tgz')
+with weakImport('tomo'):
+    from .protocol_ts_ctffind import CistemProtTsCtffind
+    from .protocol_ts_import_ctf import CistemProtTsImportCtf
+    from .protocol_tomo_resample import ProtTomoResample
+    from .protocol_ts_resample import  ProtTsResample
