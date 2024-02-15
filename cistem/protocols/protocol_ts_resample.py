@@ -28,18 +28,24 @@
 '''
 A protocol to resample tilt series by Fourier cropping/padding using cisTEM.
 '''
+# Inspired by protocol_resizeTS.py from scipion-em-xmipptomo:
+# https://github.com/I2PC/scipion-em-xmipptomo/blob/devel/xmipptomo/protocols/protocol_resizeTS.py
+
 from cistem import Plugin
+from tomo.protocols import ProtTomoBase
+import tomo.objects as tomoObj
 from pwem.protocols import EMProtocol
 from pyworkflow import BETA
 from pyworkflow.protocol import PointerParam, IntParam
 from pyworkflow.utils import *
+from pyworkflow.object import Set
 from tomo.objects import SetOfTiltSeries, TiltSeries
-from pwem.convert.headers import Ccp4Header
+from pwem.emlib.image import ImageHandler
 
 OUTPUT_TS_NAME = 'resampledTiltSeries'
 OUTPUT_DIR = 'extra/'
 
-class ProtTsResample(EMProtocol):
+class ProtTsResample(EMProtocol, ProtTomoBase):
     '''
     Resample tilt series by Fourier cropping/padding using cisTEM. This is equivalent to binning/unbinning operations but free of aliasing artifacts.
 
@@ -82,7 +88,7 @@ class ProtTsResample(EMProtocol):
 
         # You need a params to belong to a section:
         form.addSection(label=Message.LABEL_INPUT)
-        form.addParam('inTiltSeries', PointerParam,
+        form.addParam('inputSetOfTiltSeries', PointerParam,
                         pointerClass='SetOfTiltSeries',
                         allowsNull=False,
                         label='Input tilt series')
@@ -99,18 +105,21 @@ class ProtTsResample(EMProtocol):
     # -------------------------- INSERT steps functions -----------------------
     def _insertAllSteps(self):
 
-        for ts in self.inTiltSeries.get():
+        for ts in self.inputSetOfTiltSeries.get():
 
             self._insertFunctionStep(self.runTsResample,
                         ts.getObjId())
 
-        self._insertFunctionStep(self.createOutputStep)
+            self._insertFunctionStep(self.createOutputStep,
+                        ts.getObjId())
+        
+        self._insertFunctionStep('closeStreamStep')
 
     def runTsResample(self, tsObjId):
 
         prog = Plugin.getProgram('resample')
 
-        ts = self.inTiltSeries.get()[tsObjId]
+        ts = self.inputSetOfTiltSeries.get()[tsObjId]
         firstItem = ts.getFirstItem()
         tsFile = firstItem.getFileName()
 
@@ -137,30 +146,72 @@ eof\n
 
         self.tsList.append(paramDict['tsOutName'])
 
-    def createOutputStep(self):
-        labelledSet = self._genOutputSetOfTiltSeries(
-            self.tsList, 'resampled')
-        self._defineOutputs(**{OUTPUT_TS_NAME: labelledSet})
-        self._defineSourceRelation(self.inTsgrams.get(), labelledSet)
+    def createOutputStep(self, tsObjId):
+        ts = self.inputSetOfTiltSeries.get()[tsObjId]
 
-    def _genOutputSetOfTsgrams(self, tsList, suffix):
-        tsSet = SetOfTiltSeries.create(
-            self._getPath(), template='tiltseries%s.sqlite', suffix=suffix)
-        inTsSet = self.inTiltSeries.get()
-        tsSet.copyInfo(inTsSet)
+        firstItem = ts.getFirstItem()
+        tsFile = firstItem.getFileName()
+        tsBaseName = removeBaseExt(tsFile)
+        tsExt = getExt(tsFile)
 
-        outSamplingRate = Ccp4Header(tsList[0], readHeader=True).getSampling()
-        tsSet.setSamplingRate(outSamplingRate[0])
+        tsOutName = self.getWorkingDir() + '/' + OUTPUT_DIR + '/' + \
+            tsBaseName + '_resampled' + tsExt
 
-        counter = 1
-        for file, inTs in zip(tsList, inTsSet):
-            ts = TiltSeries()
-            ts.copyInfo(inTs)
-            ts.setLocation((counter, file))
-            tsSet.append(ts)
-            counter += 1    
+        tsId = ts.getTsId()
 
-        return tsSet
+        oldSamplingRate = ts.getSamplingRate()
+        oldXsize = ts.getDim()[0]
+        self.samplingRate = oldSamplingRate * oldXsize / float(self.newXsize)
+
+        outputSetOfTiltSeries = self.getOutputSetOfTiltSeries()
+
+        newTs = TiltSeries(tsId=tsId)
+        newTs.copyInfo(ts)
+        outputSetOfTiltSeries.append(newTs)
+
+        newTs.setSamplingRate(self.samplingRate)
+
+        for index, ti in enumerate(ts):
+            newTi = tomoObj.TiltImage()
+            newTi.copyInfo(ti, copyId=True)
+            newTi.setLocation(index + 1, tsOutName)
+
+            if ti.hasTransform():
+                newTi.setTransform(ti.getTransform())
+
+            newTi.setSamplingRate(self.samplingRate)
+
+            newTs.append(newTi)
+
+        ih = ImageHandler()
+        x, y, z, _ = ih.getDimensions(newTs.getFirstItem().getFileName())
+        newTs.setDim((x, y, z))
+        newTs.write(properties=False)
+
+        outputSetOfTiltSeries.update(newTs)
+        outputSetOfTiltSeries.updateDim()
+        outputSetOfTiltSeries.write()
+
+        self._store()
+
+    def closeStreamStep(self):
+        self.getOutputSetOfTiltSeries().setStreamState(Set.STREAM_CLOSED)
+
+        self._store()
+
+    # --------------------------- UTILS functions -------------------------------
+    def getOutputSetOfTiltSeries(self):
+        if hasattr(self, "outputSetOfTiltSeries"):
+            self.outputSetOfTiltSeries.enableAppend()
+        else:
+            outputSetOfTiltSeries = self._createSetOfTiltSeries()
+            outputSetOfTiltSeries.copyInfo(self.inputSetOfTiltSeries.get())
+            outputSetOfTiltSeries.setDim(self.inputSetOfTiltSeries.get().getDim())
+            outputSetOfTiltSeries.setSamplingRate(self.samplingRate)
+            outputSetOfTiltSeries.setStreamState(Set.STREAM_OPEN)
+            self._defineOutputs(outputSetOfTiltSeries=outputSetOfTiltSeries)
+            self._defineSourceRelation(self.inputSetOfTiltSeries, outputSetOfTiltSeries)
+        return self.outputSetOfTiltSeries
 
     # --------------------------- INFO functions -----------------------------------
     def _citations(self):
@@ -176,4 +227,3 @@ eof\n
         if self.newYsize <= 0:
             errors.append('New Y size must be greater than zero!')
         return errors
-    
